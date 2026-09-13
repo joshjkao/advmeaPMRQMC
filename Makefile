@@ -1,6 +1,6 @@
 CXX ?= g++
 MPICXX ?= mpicxx
-CXXFLAGS ?= -O3 -std=c++11
+CXXFLAGS ?= -O3 -std=c++23
 
 .PHONY: all clean test validate-pt
 

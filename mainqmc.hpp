@@ -1072,7 +1072,7 @@ static double measure_Hdiag_kint(size_t k) {
     std::vector<double> Oi(q+1);
     auto lattice_backup = lattice;
     for (decltype(q) ii = 0; ii < q+1; ++ii) {
-      Ei[ii] = (d->z[ii] / -beta);
+      Ei[ii] = (d->z[ii] / -run_beta);
       // Oi[ii] = lattice.to_ullong();
       Oi[ii] = calculate_Oi(lattice);
 
@@ -1088,7 +1088,7 @@ static double measure_Hdiag_kint(size_t k) {
     }
 
 
-    ret = Mk<specgap_config.KMAX>(Ei, Oi, dd_beta, beta_pow_fac, beta_div2_pow_fac, beta);
+    ret = Mk<specgap_config.KMAX>(Ei, Oi, dd_beta, beta_pow_fac, beta_div2_pow_fac, run_beta);
   }
   return ret[k];
 }

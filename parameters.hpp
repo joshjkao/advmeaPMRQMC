@@ -31,7 +31,7 @@
 
 #include <cstddef>
 #define Tsteps 100000 // number of Monte-Carlo initial equilibration updates
-#define steps 10000000  // number of Monte-Carlo updates
+#define steps 1000000  // number of Monte-Carlo updates
 // #define steps 50000000 // number of Monte-Carlo updates
 #define stepsPerMeasurement 10 // number of Monte-Carlo updates per measurement
 #define beta 0.1 // inverse temperature
