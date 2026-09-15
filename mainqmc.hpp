@@ -1086,8 +1086,6 @@ static double measure_Hdiag_kint(size_t k) {
     for (decltype(q) ii = 0; ii < q+1; ++ii) {
       dd_beta[ii] = d->divdiffs[ii].get_double();
     }
-
-
     ret = Mk<specgap_config.KMAX>(Ei, Oi, dd_beta, beta_pow_fac, beta_div2_pow_fac, run_beta);
   }
   return ret[k];
