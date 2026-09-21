@@ -1053,19 +1053,25 @@ double measure_Hdiag_Fint(){
 static double measure_Hdiag_kint(size_t k) {
   static std::array<double, specgap_config.KMAX> ret{};
   static const std::vector<double> beta_pow_fac = [] {
-    std::vector<double> ret(qmax);
-    for (decltype(q) ii = 0; ii < qmax; ++ii) {
+    std::vector<double> ret(qmax, 1.0);
+    for (decltype(q) ii = 1; ii < qmax; ++ii) {
       ret[ii] = beta_pow_factorial[ii].get_double();
+      // ret[ii] = ret[ii] * (-run_beta) / ii;
     }
     return ret;
   }();
   static const std::vector<double> beta_div2_pow_fac = [] {
-    std::vector<double> ret(qmax);
-    for (decltype(q) ii = 0; ii < qmax; ++ii) {
+    std::vector<double> ret(qmax, 1.0);
+    for (decltype(q) ii = 1; ii < qmax; ++ii) {
       ret[ii] = beta_div2_pow_factorial[ii].get_double();
+      // ret[ii] = ret[ii] * (-run_beta / 2) / ii;
     }
     return ret;
   }();
+
+  if (beta_pow_fac[1] != -run_beta) {
+  	throw std::runtime_error("no match");
+  }
 
   if (k == 0) {
     std::vector<double> Ei(q+1);
@@ -1073,7 +1079,6 @@ static double measure_Hdiag_kint(size_t k) {
     auto lattice_backup = lattice;
     for (decltype(q) ii = 0; ii < q+1; ++ii) {
       Ei[ii] = (d->z[ii] / -run_beta);
-      // Oi[ii] = lattice.to_ullong();
       Oi[ii] = calculate_Oi(lattice);
 
       if (ii < q) {
