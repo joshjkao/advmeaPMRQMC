@@ -158,6 +158,35 @@ double last_measurement_sgn;
 #define fout(obj) { foutput.write((char *)& obj, sizeof(obj)); }
 #define fin(obj)  { finput.read((char *)& obj, sizeof(obj)); }
 
+void export_timeseries_text(){
+    char fname[100];
+    if(mpi_size>0) sprintf(fname,"timeseries_rank%d.txt",mpi_rank);
+    else sprintf(fname,"timeseries.txt");
+    
+    std::ofstream ftxt(fname);
+    if(!ftxt.good()) return;
+
+    // Optional: Write a header so you know which column is which
+    ftxt << "# Sign ";
+    for(int i=0; i<N_all_observables; i++) ftxt << "Obs_" << i << " ";
+    ftxt << "\n";
+    
+    // Calculate how many bins have been completely filled
+    int total_bins = measurement_step / bin_length; 
+    
+    // Use maximum precision so you don't lose float data
+    ftxt << std::scientific << std::setprecision(15);
+    
+    for(int b = 0; b < total_bins; b++){
+        ftxt << bin_mean_sgn[b] << " ";
+        for(int i = 0; i < N_all_observables; i++){
+            ftxt << bin_mean[i][b] << " ";
+        }
+        ftxt << "\n";
+    }
+    ftxt.close();
+}
+
 void save_QMC_data(int printout = 1){
 	if(printout) std::cout<<"SIGTERM signal detected. Saving unfinished calculation...";
 	char fname[100]; if(mpi_size>0) sprintf(fname,"qmc_data_%d.dat",mpi_rank); else sprintf(fname,"qmc_data.dat");
@@ -182,6 +211,8 @@ void save_QMC_data(int printout = 1){
 		fout(magic); fout(dynamic_run_identity); fout(run_beta); fout(run_tau); fout(run_gamma);
 	}
 	foutput.close(); if(printout) std::cout<<"done"<<std::endl; fflush(stdout);
+
+	export_timeseries_text();
 }
 
 int check_QMC_data(){
