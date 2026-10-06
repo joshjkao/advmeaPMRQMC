@@ -110,5 +110,3 @@ inline double calculate_Oi(const std::bitset<16> &l) {
 static_assert(false, "A test operator is not specified");
 #endif
 
-
-
