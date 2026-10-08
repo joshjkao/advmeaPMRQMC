@@ -9,6 +9,9 @@ all: prepare.bin PMRQMC.bin PMRQMC_mpi.bin PMRQMC_pt_mpi.bin PMRQMC_qcpt_mpi.bin
 prepare.bin: prepare.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $<
 
+hamiltonian.hpp: prepare.bin H.txt
+	./prepare.bin H.txt
+
 PMRQMC.bin: PMRQMC.cpp mainqmc.hpp beta_anneal.hpp divdiff.hpp hamiltonian.hpp parameters.hpp
 	$(CXX) $(CXXFLAGS) -o $@ $<
 
