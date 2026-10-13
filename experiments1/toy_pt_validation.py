@@ -1,22 +1,34 @@
+import os
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 from autocorr import calc_autocorr
+from dotenv import load_dotenv
 from hamiltonian import generate_1d_tfi, generate_quantum_sk_hamiltonian, toy_3bit
 from pmrqmc_mpi_driver import execute_pt_run_native, execute_run_native, setup_run_dir
 from pt_optimize import optimize_schedule
 from roundtrips import parse_rt_stats
 
 # h_str = toy_3bit()
-h_str = generate_1d_tfi(4, 1.0, 1.0, 0.0, True)
-# h_str = generate_quantum_sk_hamiltonian(3, 1.0, 1.5, 42)
+# h_str = generate_1d_tfi(3, 1.0, 1.0, 0.0, True)
+h_str = generate_quantum_sk_hamiltonian(3, 1.0, 1.0, 42)
 
-run_dir = Path("toy_pt_validation")
+load_dotenv()
+scratch_dir = Path(os.getenv("SCRATCH_DIR", "."))
 
+run_dir = scratch_dir / "toy_validation"
 beta_min = 0.0625
-beta_max = 16.0
+beta_max = 1.0
 
-n_temperatures = 10
+if not run_dir.exists():
+    setup_run_dir(run_dir, h_str)
+else:
+    with open(run_dir / "H.txt", "w") as f:
+        f.write(h_str)
+
+n_temperatures = 5
+nproc = 40
 
 autocorr_params = {
     "Tsteps": 10000,
@@ -30,11 +42,8 @@ autocorr_params = {
     "save_completed_calculation": True,
     "save_unfinished_calculation": False,
     "resume_calculation": False,
-    "nproc": 1
+    "nproc": 1,
 }
-
-if not run_dir.exists():
-    setup_run_dir(run_dir, h_str)
 
 print("executing short run for autocorrelation statistics")
 execute_run_native(run_dir, autocorr_params)
@@ -47,10 +56,11 @@ feedback_loops = 10
 init_schedule = np.geomspace(beta_max, beta_min, n_temperatures)
 tau_corr = int(np.ceil(tau))
 
-tuning_exchanges = 10000  
+therm_exchanges = 10000
+tuning_exchanges = 10000
 
 params = {
-    "Tsteps": 50000,
+    "Tsteps": therm_exchanges * tau_corr,
     "steps": tuning_exchanges * tau_corr,
     "stepsPerMeasurement": tau_corr,
     "beta": beta_min,
@@ -63,7 +73,7 @@ params = {
     "save_unfinished_calculation": False,
     "resume_calculation": False,
     "updates_per_exchange": tau_corr,
-    "nproc": 40
+    "nproc": nproc,
 }
 
 avg_rt_length = None
@@ -71,25 +81,29 @@ avg_rt_length = None
 for iteration in range(feedback_loops):
     print(f"\n--- Running PT Optimization Iteration {iteration} ---")
     execute_pt_run_native(run_dir, params)
-    
+
     total_visits, round_trips = parse_rt_stats(run_dir / "pmrqmc_pt_flow.csv")
-    
+
     if round_trips > 0:
         avg_rt_length = total_visits / round_trips
-        print(f"Iteration {iteration} avg RT length: {avg_rt_length:.2f} exchange attempts")
+        print(
+            f"Iteration {iteration} avg RT length: {avg_rt_length:.2f} exchange attempts"
+        )
     else:
-        print(f"Warning: 0 round trips completed in iteration {iteration}. Increase tuning_exchanges.")
+        print(
+            f"Warning: 0 round trips completed in iteration {iteration}. Increase tuning_exchanges."
+        )
         avg_rt_length = tuning_exchanges  # Fallback estimate
 
     _, old_schedule, new_schedule = optimize_schedule(
-        run_dir / "pmrqmc_pt_flow.csv", 
-        run_dir / "schedule.txt", 
-        run_dir / "schedule.txt"
+        run_dir / "pmrqmc_pt_flow.csv",
+        run_dir / "schedule.txt",
+        run_dir / "schedule.txt",
     )
-    
+
     old_betas = old_schedule[:, 0]
     new_betas = new_schedule[:, 0]
-    
+
     params["beta_range"] = new_betas
 
     if np.allclose(old_betas, new_betas, rtol=0.01):
@@ -97,15 +111,26 @@ for iteration in range(feedback_loops):
         break
 
 # Target bin length calculation for final production run
-target_bin_length = int(avg_rt_length * tau_corr * 2)
+int_rt_length = int(np.ceil(avg_rt_length))
+target_bin_length = int_rt_length * tau_corr * 2
 print(f"Final target bin length: {target_bin_length}")
 
+timing_data = pd.read_csv(run_dir / "pmrqmc_pt_rank_timing.csv")
+wall_time = np.max(timing_data["elapsed_seconds"])
+time_per_update = wall_time / (tuning_exchanges) / tau_corr
+
+therm_target_bins = 100
 final_target_bins = 1000
+therm_target_steps = therm_target_bins * target_bin_length
+target_steps = final_target_bins * target_bin_length
+
+expected_time = time_per_update * target_steps
+
 final_params = {
-    "Tsteps": 20 * target_bin_length,
-    "steps": final_target_bins * target_bin_length,
-    "stepsPerMeasurement": tau + 1,
-    "updates_per_exchange": tau,
+    "Tsteps": therm_target_steps,
+    "steps": target_steps,
+    "stepsPerMeasurement": tau_corr,
+    "updates_per_exchange": tau_corr,
     "beta": beta_min,
     "beta_range": params["beta_range"],
     "tau": beta_min / 2,
@@ -114,8 +139,10 @@ final_params = {
     "save_completed_calculation": False,
     "save_unfinished_calculation": False,
     "resume_calculation": False,
-    "nproc": 40,
+    "nproc": nproc,
     "validate": True,
 }
+
+print(f"starting final run. expected time: {expected_time} seconds")
 
 execute_pt_run_native(run_dir, final_params)

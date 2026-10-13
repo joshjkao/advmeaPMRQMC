@@ -1,6 +1,5 @@
 import shutil
 import subprocess
-import sys
 from contextlib import chdir
 from pathlib import Path
 
@@ -62,6 +61,8 @@ def write_pt_schedule(betas, output_file):
 
 def copy_sources_to_run_directory(run_dir):
     run_dir_path = Path(run_dir)
+    this_dir = Path(__file__).resolve().parent
+    source_dir = this_dir / ".."
     sources = [
         "DivDiffExp.hpp",
         "PMRQMC_mpi.cpp",
@@ -81,7 +82,7 @@ def copy_sources_to_run_directory(run_dir):
     ]
 
     for source in sources:
-        shutil.copy(source, run_dir_path / source)
+        shutil.copy(source_dir / source, run_dir_path / source)
 
 
 def setup_run_dir(run_dir, h_string):

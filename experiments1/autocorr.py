@@ -6,18 +6,37 @@ import numpy as np
 
 def calc_autocorr(file):
     data = np.loadtxt(file)
-    data = data[:,-1]
-    try:
-        # The c=5 parameter is the standard windowing tolerance for MCMC
-        tau = emcee.autocorr.integrated_time(data, c=5)[0]
-    
-        recommended_bin_length=int(np.ceil(2 * tau))
+    # data = data[:,-1]
 
-        return tau, recommended_bin_length
+    max_tau = 0.0
+    num_cols = data.shape[1]
+    valid_cols = 0
+
+    for col_index in range(num_cols):
+        col = data[:,col_index]
+
+        if np.all(col == col[0]):
+            continue
+
+        valid_cols += 1
     
-    except emcee.autocorr.AutocorrError as e:
-        print("Warning: The timeseries is too short to reliably measure tau!")
-        print(e)
+        try:
+            # The c=5 parameter is the standard windowing tolerance for MCMC
+            tau = emcee.autocorr.integrated_time(col, c=5)[0]
+            max_tau = max(max_tau, tau)
+    
+        except emcee.autocorr.AutocorrError as e:
+            print("Warning: The timeseries is too short to reliably measure tau!")
+            print(e)
+
+    if valid_cols == 0:
+        print("warning: no valid timeseries were found")
+
+    if max_tau == 0.0:
+        print("warning: could not compute autocorrelation for any valid timeseries")
+
+    recommended_bin_length=int(np.ceil(2 * max_tau))
+    return max_tau, recommended_bin_length
 
 if __name__ == "__main__":
     file = sys.argv[1]
