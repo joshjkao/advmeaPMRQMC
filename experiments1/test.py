@@ -36,7 +36,7 @@ for key, val in params.items():
         cmd_args.append(f"{flag} {shlex.quote(str(val))}")
 
 # Combine into terminal execution command
-exec_cmd = f"python3 -u toy_pt_validation.py {' '.join(cmd_args)}"
+exec_cmd = f"python3 -u pt_validation_driver.py {' '.join(cmd_args)}"
 
 s = Slurm(nodes=2, partition="albash", exclusive=True, output=f"{params["name"]}.out", time="1-00:00:00")
 s.add_cmd("source venv/bin/activate")
