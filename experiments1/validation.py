@@ -1,17 +1,11 @@
 import math
+import sys
+from pathlib import Path
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import scipy
-from qiskit.quantum_info import (
-    Operator,
-    SparsePauliOp,
-    random_hermitian,
-)
 from scipy import sparse
-import sys
-from pathlib import Path
 
 
 def c_tau_beta(h, o, beta, tau):
@@ -53,12 +47,47 @@ def c_tau_beta(h, o, beta, tau):
     return gTau
 
 
+def Hdiag_kint_beta(h, o, beta, tau):
+    """
+    C(\\tau) = \\langle O(\\tau) O \\rangle
+    """
+    evals, evecs = np.linalg.eigh(h)
+
+    z = np.sum(np.exp(-beta * evals))
+
+    corr = (
+        np.sum(
+            [
+                np.exp(-(beta - tau) * evals[i])
+                * np.exp(-tau * evals[j])
+                * np.abs(np.dot(np.conj(evecs[:, i].T), np.dot(o, evecs[:, j]))) ** 2
+                for i in range(len(evals))
+                for j in range(len(evals))
+            ]
+        )
+        / z
+    )
+
+    gTau = corr
+    if gTau.imag < 1e-8:
+        gTau = gTau.real
+
+    return gTau
+
+
 def m_beta_chi_k(h, o, beta, k):
     """
     Integrates tau^k*c_tau_beta over tau from [0, beta/2].
     """
     result, error = scipy.integrate.quad(
         lambda tau: tau**k * c_tau_beta(h, o, beta, tau), 0, beta / 2
+    )
+    return result, error
+
+
+def calc_Hdiag_kint(h, o, beta, k):
+    result, error = scipy.integrate.quad(
+        lambda tau: tau**k * Hdiag_kint_beta(h, o, beta, tau), 0, beta / 2
     )
     return result, error
 
@@ -163,59 +192,144 @@ def text_to_hamiltonian_matrix(
     return H if sparse_output else H.toarray()
 
 
-def run_numerics(h_file, o_file, k_values, beta_values, pt_format=False):
-    h = text_to_hamiltonian_matrix(h_file)
+def run_numerics(
+    h_file,
+    o_file,
+    k_values,
+    beta_values,
+    pt_format=False,
+    h_gamma_file=None,
+    gamma_values=None,
+):
+    h_base = text_to_hamiltonian_matrix(h_file)
     o = text_to_hamiltonian_matrix(o_file)
 
-    evals, evecs = sparse.linalg.eigsh(h)
+    # Load H_gamma if provided
+    h_gamma = (
+        text_to_hamiltonian_matrix(h_gamma_file) if h_gamma_file is not None else None
+    )
 
-    o_rotated = evecs.conj().T @ o @ evecs
+    # Determine (beta, gamma) pairs
+    if gamma_values is None:
+        bg_pairs = [(beta, 0.0) for beta in beta_values]
+    elif len(gamma_values) == len(beta_values):
+        # 1D PT schedule pairing: replica i has (beta_i, gamma_i)
+        bg_pairs = list(zip(beta_values, gamma_values))
+    else:
+        # Full grid evaluation: all beta x gamma combinations
+        bg_pairs = [(beta, gamma) for gamma in gamma_values for beta in beta_values]
 
-    # actual_gap = evals[1] - evals[0]
+    # Group betas by unique gamma values to optimize sparse.linalg.eigsh calls
+    gamma_to_betas = defaultdict(list)
+    for beta, gamma in bg_pairs:
+        gamma_to_betas[gamma].append(beta)
 
     data_rows = []
 
-    for this_k in k_values:
-        exact_bound = R_k(this_k, o_rotated, evals)
-        # print(f"the k={this_k} bound is {exact_bound}")
+    # Loop over each unique gamma value
+    for gamma, betas_for_gamma in gamma_to_betas.items():
+        # Construct H_eff(gamma) = H_base + gamma * H_gamma
+        if h_gamma is not None and gamma != 0.0:
+            h_eff = h_base + gamma * h_gamma
+        else:
+            h_eff = h_base
 
-        num_den_estimates = np.array(
-            [calc_approx_gs_gap_k(h, o, beta, this_k) for beta in beta_values]
-        )  # numerically integrate C(\\tau) and take the ratio
+        # Diagonalize effective Hamiltonian for the current gamma
+        evals, evecs = sparse.linalg.eigsh(h_eff)
+        o_rotated = evecs.conj().T @ o @ evecs
 
-        kth_moments = num_den_estimates[:, 0]
-        estimates = num_den_estimates[:, 2]
+        for this_k in k_values:
+            exact_bound = R_k(this_k, o_rotated, evals)
 
-        estimates *= 1 / math.factorial(this_k)
-        estimates *= math.factorial(this_k + 1)
+            for beta in betas_for_gamma:
+                # Pass effective Hamiltonian h_eff to numerical integration
+                num_den_estimate = calc_approx_gs_gap_k(h_eff, o, beta, this_k)
 
-        # store results
-        for beta, moment, estimate in zip(beta_values, kth_moments, estimates):
-            if not pt_format:
-                data_rows.append(
-                    {
-                        "k": this_k,
-                        "exact_bound": exact_bound,
-                        "beta": beta,
-                        "M_k^{beta/2}": moment,
-                        "R_k": estimate,
-                    }
-                )
-            else:
-                data_rows.append(
-                    {
-                        "beta": beta,
-                        "name": f"ratio_k{this_k}",
-                        "exact": estimate
-                    }
-                )
+                moment = num_den_estimate[0] / math.factorial(this_k)
+                if this_k % 2 == 0:
+                    moment *= -1
+
+                k_plus_one_moment = num_den_estimate[1] / math.factorial(this_k + 1)
+                if this_k % 2 == 1:
+                    k_plus_one_moment *= -1
+
+                estimate = num_den_estimate[2]
+
+                # Factorial rescaling: (k+1)! / k! = k + 1
+                estimate *= this_k + 1
+
+                Hdiag_kint, _ = calc_Hdiag_kint(h_eff, o, beta, this_k)
+                Hdiag_kint /= math.factorial(this_k)
+                if this_k % 2 == 0:
+                    Hdiag_kint *= -1
+
+                if not pt_format:
+                    data_rows.append(
+                        {
+                            "k": this_k,
+                            "exact_bound": exact_bound,
+                            "beta": beta,
+                            "gamma": gamma,
+                            "M_k^{beta/2}": moment,
+                            "R_k": estimate,
+                        }
+                    )
+                else:
+                    data_rows.append(
+                        {
+                            "beta": beta,
+                            "gamma": gamma,
+                            "name": f"measure_Hdiag_kint_{this_k}",
+                            "exact": Hdiag_kint,
+                        }
+                    )
+                    data_rows.append(
+                        {
+                            "beta": beta,
+                            "gamma": gamma,
+                            "name": f"ratio_k{this_k}",
+                            "exact": estimate,
+                        }
+                    )
+                    data_rows.append(
+                        {
+                            "beta": beta,
+                            "gamma": gamma,
+                            "name": f"susceptibility_k{this_k}",
+                            "exact": moment,
+                        }
+                    )
+                    if this_k == k_values[-1]:
+                        data_rows.append(
+                            {
+                                "beta": beta,
+                                "gamma": gamma,
+                                "name": f"susceptibility_k{this_k + 1}",
+                                "exact": k_plus_one_moment,
+                            }
+                        )
+                        Hdiag_kint_plus_one, _ = calc_Hdiag_kint(
+                            h_eff, o, beta, this_k + 1
+                        )
+                        Hdiag_kint_plus_one /= math.factorial(this_k + 1)
+                        if this_k % 2 == 1:
+                            Hdiag_kint_plus_one *= -1
+                        data_rows.append(
+                            {
+                                "beta": beta,
+                                "gamma": gamma,
+                                "name": f"measure_Hdiag_kint_{this_k + 1}",
+                                "exact": Hdiag_kint_plus_one,
+                            }
+                        )
+
     gap_estimates = pd.DataFrame(data_rows)
     return gap_estimates
 
 
 import re
 from collections import defaultdict
-import pandas as pd
+
 
 def parse_simulation_output(file_path_or_text, is_file=True):
     if is_file:
@@ -229,7 +343,7 @@ def parse_simulation_output(file_path_or_text, is_file=True):
     # 1. Parse Simulation Parameters & General Statistics
     params_match = re.search(
         r"Parameters:\s*beta\s*=\s*(?P<beta>[\d.]+),\s*Tsteps\s*=\s*(?P<Tsteps>\d+),\s*steps\s*=\s*(?P<steps>\d+)",
-        text
+        text,
     )
     if params_match:
         metadata["beta"] = float(params_match.group("beta"))
@@ -252,8 +366,12 @@ def parse_simulation_output(file_path_or_text, is_file=True):
     if q_max:
         metadata["max_q"] = float(q_max.group(1))
 
-    sgn_mean = re.search(r"Total mean\(sgn\(W\)\)\s*=\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)", text)
-    sgn_std = re.search(r"Total std\.dev\.\(sgn\(W\)\)\s*=\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)", text)
+    sgn_mean = re.search(
+        r"Total mean\(sgn\(W\)\)\s*=\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)", text
+    )
+    sgn_std = re.search(
+        r"Total std\.dev\.\(sgn\(W\)\)\s*=\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)", text
+    )
     if sgn_mean:
         metadata["mean_sgn_w"] = float(sgn_mean.group(1))
     if sgn_std:
@@ -263,7 +381,7 @@ def parse_simulation_output(file_path_or_text, is_file=True):
         r"Total of observable #1: H_\{diag\}\s*\n"
         r"Total mean\(O\) = (?P<mean>[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\s*\n"
         r"Total std\.dev\.\(O\) = (?P<std>[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)",
-        text
+        text,
     )
     if h_diag:
         metadata["h_diag_mean"] = float(h_diag.group("mean"))
@@ -322,26 +440,39 @@ def parse_simulation_output(file_path_or_text, is_file=True):
 
     return df, metadata
 
+
 def validate_pt(path):
     path = Path(path)
     observables = path / "pmrqmc_pt_observables.csv"
     hamiltonian = path / "H.txt"
+    target_hamiltonian_gamma = path / "H_gamma.txt"
+    hamiltonian_gamma = (
+        target_hamiltonian_gamma if target_hamiltonian_gamma.exists() else None
+    )
     test_operator = path / "O.txt"
 
     sim_data = pd.read_csv(observables)
     beta_values = np.unique(sim_data["beta"])
+    gamma_values = np.unique(sim_data["gamma"])
     k_max = len(np.unique(sim_data[sim_data["name"].str.contains("ratio")]["name"]))
     k_values = [i for i in range(k_max)]
-    theor = run_numerics(hamiltonian, test_operator, k_values, beta_values, True)
+    theor = run_numerics(
+        hamiltonian,
+        test_operator,
+        k_values,
+        beta_values,
+        True,
+        h_gamma_file=hamiltonian_gamma,
+        gamma_values=gamma_values,
+    )
 
-    merged = pd.merge(sim_data, theor, "left", on=["beta", "name"])
+    merged = pd.merge(sim_data, theor, "left", on=["beta", "gamma", "name"])
     merged["zscore"] = (merged["mean"] - merged["exact"]) / merged["stdev"]
 
     return merged
-   
+
 
 if __name__ == "__main__":
-    path = Path(sys.argv[1])    
+    path = Path(sys.argv[1])
     df = validate_pt(path)
     df.to_csv(path / "validation_out.csv")
-

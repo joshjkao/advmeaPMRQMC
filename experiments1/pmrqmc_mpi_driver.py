@@ -13,50 +13,67 @@ def write_parameters_hpp(params, output_file):
     steps = params["steps"]
     stepsPerMeasurement = params["stepsPerMeasurement"]
     beta = params["beta"]
+    gamma = params["gamma"]
     tau = params["tau"]
     Nbins = params["Nbins"]
     kmax = params["kmax"]
     save_completed_calculation = params["save_completed_calculation"]
     save_unfinished_calculation = params["save_unfinished_calculation"]
     resume_calculation = params["resume_calculation"]
+    save_timeseries = params["save_timeseries"]
 
+    lines = [
+        "#pragma once",
+        f"#define Tsteps {Tsteps}",
+        f"#define steps  {steps}",
+        f"#define stepsPerMeasurement {stepsPerMeasurement}",
+        f"#define beta {beta}",
+        f"#define tau {tau}",
+        "#ifndef gamma",
+        f"#define gamma {gamma} // coefficient multiplying H_gamma for split Hamiltonians",
+        "#endif",
+        "#define parity_cond 0 // controls parity subspace measurement",
+        "",
+        "#define MEASURE_HDIAG",
+        "#define MEASURE_HDIAG_KINT",
+        "static constexpr struct SPECGAP_CONFIG {",
+        f"  size_t KMAX{{{kmax}}};",
+        "} specgap_config;",
+        "#define TEST_OPERATOR_RANDOM_ZSUM",
+        "",
+        "#define qmax 1000",
+        f"#define Nbins {Nbins}",
+        "#define EXHAUSTIVE_CYCLE_SEARCH",
+        "#define GAPS_GEOMETRIC_PARAMETER 0.8",
+        "#define COMPOSITE_UPDATE_BREAK_PROBABILITY 0.9",
+        "",
+        "#define HURRY_ON_SIGTERM",
+    ]
+
+    if save_completed_calculation:
+        lines.append("#define SAVE_COMPLETED_CALCULATION")
+    if save_unfinished_calculation:
+        lines.append("#define SAVE_UNFINISHED_CALCULATION")
+    if resume_calculation:
+        lines.append("#define RESUME_CALCULATION")
+    if save_timeseries:
+        lines.append("#define SAVE_TIMESERIES")
+
+    new_content = "\n".join(lines) + "\n"
+
+    target_path = Path(output_file)
+
+    # Check if the file exists and if the content matches
+    if target_path.exists() and target_path.read_text() == new_content:
+        return
+
+    target_path.write_text(new_content)
+    print(f"Updated {target_path.name}.")
+
+
+def write_pt_schedule(betas, gammas, output_file):
     with open(output_file, "w") as f:
-        f.write(f"""#pragma once
-#define Tsteps {Tsteps}
-#define steps  {steps}
-#define stepsPerMeasurement {stepsPerMeasurement}
-#define beta {beta}
-#define tau {tau}
-#ifndef gamma
-#define gamma 1.0 // coefficient multiplying H_gamma for split Hamiltonians
-#endif
-#define parity_cond 0 // controls parity subspace measurement 
-
-#define MEASURE_HDIAG
-#define MEASURE_HDIAG_KINT
-static constexpr struct SPECGAP_CONFIG {{
-  size_t KMAX{{{kmax}}};
-}} specgap_config;
-#define TEST_OPERATOR_RANDOM_ZSUM
-
-#define qmax 1000
-#define Nbins {Nbins}
-#define EXHAUSTIVE_CYCLE_SEARCH
-#define GAPS_GEOMETRIC_PARAMETER 0.8
-#define COMPOSITE_UPDATE_BREAK_PROBABILITY 0.9
-
-#define HURRY_ON_SIGTERM\n""")
-        if save_completed_calculation:
-            f.write("#define SAVE_COMPLETED_CALCULATION\n")
-        if save_unfinished_calculation:
-            f.write("#define SAVE_UNFINISHED_CALCULATION\n")
-        if resume_calculation:
-            f.write("#define RESUME_CALCULATION\n")
-
-
-def write_pt_schedule(betas, output_file):
-    with open(output_file, "w") as f:
-        f.writelines(f"{beta} {1.0}\n" for beta in betas)
+        f.writelines(f"{beta} {gamma}\n" for beta, gamma in zip(betas, gammas))
 
 
 def copy_sources_to_run_directory(run_dir):
@@ -85,7 +102,7 @@ def copy_sources_to_run_directory(run_dir):
         shutil.copy(source_dir / source, run_dir_path / source)
 
 
-def setup_run_dir(run_dir, h_string):
+def setup_run_dir(run_dir, h_string, h_gamma_string=None):
     run_dir_path = Path(run_dir)
     run_dir_path.mkdir(parents=True, exist_ok=False)
 
@@ -93,6 +110,10 @@ def setup_run_dir(run_dir, h_string):
 
     with open(run_dir_path / "H.txt", "w") as f:
         f.write(h_string)
+
+    if h_gamma_string != None:
+        with open(run_dir_path / "H_gamma.txt", "w") as f:
+            f.write(h_gamma_string)
 
 
 def execute_run_native(run_dir, params):
@@ -112,7 +133,9 @@ def execute_run_native(run_dir, params):
 def execute_pt_run_native(run_dir, params):
     run_dir_path = Path(run_dir)
     write_parameters_hpp(params, run_dir_path / "parameters.hpp")
-    write_pt_schedule(params["beta_range"], run_dir_path / "schedule.txt")
+    write_pt_schedule(
+        params["beta_range"], params["gamma_range"], run_dir_path / "schedule.txt"
+    )
     validate = params["validate"]
     nproc = params["nproc"]
     with chdir(run_dir_path):

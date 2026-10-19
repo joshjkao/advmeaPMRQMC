@@ -126,6 +126,9 @@ void compute(){
 #ifdef SAVE_COMPLETED_CALCULATION
 	save_QMC_data(0);
 #endif
+#ifdef SAVE_TIMESERIES
+	export_timeseries_text();
+#endif
 	meanq /= measurements;
 	elapsed_time = MPI_Wtime()-start_time;
 	std::cout << "Calculation completed for MPI process No. " << mpi_rank
@@ -271,7 +274,10 @@ int main(int argc, char* argv[]){
 		if(!append) write_stream_timeseries_header();
 	}
 	MPI_Barrier(MPI_COMM_WORLD);
-	compute(); process_single_run();
+	compute();
+#ifndef SAVE_TIMESERIES
+	process_single_run();
+#endif
 	MPI_Barrier(MPI_COMM_WORLD);
 	if(mpi_rank == 0){
 		std::cout << std::endl;

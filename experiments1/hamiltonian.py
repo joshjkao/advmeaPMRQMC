@@ -1,13 +1,20 @@
 import numpy as np
 
 
-def toy_3bit() -> str:
-    return """-0.7 1 X 
+def toy_3bit(split=False):
+    if not split:
+        return """-0.7 1 X 
 -0.7 2 X 
 1.0 1 Z 2 Z 
 -0.7 3 X 
 1.0 3 Z 
 1.0 2 Z 3 Z"""
+    else:
+        return """1.0 1 Z 2 Z
+1.0 3 Z
+1.0 2 Z 3 Z""", """-0.7 1 X
+-0.7 2 X
+-0.7 3 X"""
 
 def generate_1d_tfi(N: int, J: float = 1.0, h_x: float = 1.0, h_z: float = 0.0, pbc: bool = False) -> str:
     """
@@ -395,45 +402,52 @@ def generate_vbs_order_diagonal(
             f.writelines(l + "\n" for l in lines)
     return lines
 
-def generate_quantum_sk_hamiltonian(num_spins, J_scale, gamma, seed=None):
-    """
-    Generates a string representation of the Quantum SK model Hamiltonian.
-    
+
+def generate_quantum_sk_hamiltonian(
+    num_spins, J_scale, gamma, seed=None, split=False, unit_gamma=False
+):
+    """Generates a string representation of the Quantum SK model Hamiltonian.
+
     Args:
         num_spins (int): Total number of spins (N).
-        J_scale (float): The energy scale for the random interactions. 
+        J_scale (float): The energy scale for the random interactions.
         gamma (float): Strength of the transverse magnetic field.
         seed (int): Optional random seed for reproducibility.
-        
+        split (bool): If True, returns a tuple (h_fixed_str, h_gamma_str).
+                      If False, returns a single combined string.
+        unit_gamma (bool): If True (and split=True), sets the X field coefficient to
+                           -1.0 instead of -gamma. Useful if prepare.bin or PT QMC
+                           dynamically scales gamma at runtime.
+
     Returns:
-        str: A multi-line string containing the Hamiltonian terms.
+        str or tuple[str, str]: Hamiltonian terms as string(s).
     """
     if seed is not None:
         np.random.seed(seed)
-        
-    # Standard deviation for the Gaussian distribution is J / sqrt(N)
+
+    # Standard deviation for Gaussian distribution: J / sqrt(N)
     std_dev = J_scale / np.sqrt(num_spins)
-    
-    lines = []
-    
-    # 1. Generate two-body ZZ interactions (all-to-all coupling)
+
+    fixed_lines = []
+    gamma_lines = []
+
+    # 1. Generate two-body ZZ interactions (H_fixed)
     for i in range(1, num_spins + 1):
         for j in range(i + 1, num_spins + 1):
-            # Draw J_ij from a normal distribution
             J_ij = np.random.normal(0, std_dev)
             coeff = -J_ij
-            
-            # Append to list matching the QMC format
-            lines.append(f"{coeff:.4f} {i} Z {j} Z")
-            
-    # 2. Generate one-body X terms (transverse field)
+            fixed_lines.append(f"{coeff:.4f} {i} Z {j} Z")
+
+    # 2. Generate one-body X terms (H_gamma)
+    x_coeff = -1.0 if (split and unit_gamma) else -gamma
     for i in range(1, num_spins + 1):
-        coeff = -gamma
-        lines.append(f"{coeff:.4f} {i} X")
+        gamma_lines.append(f"{x_coeff:.4f} {i} X")
 
-    # Join all lines with a newline character
-    return "\n".join(lines)
+    # Return split tuple or single combined string
+    if split:
+        return "\n".join(fixed_lines), "\n".join(gamma_lines)
 
+    return "\n".join(fixed_lines + gamma_lines)
 
 # def generate_random_z_operator(num_spins, filename="test_operator.txt", seed=None):
 #     """
