@@ -140,11 +140,11 @@ void process_single_run(){
 	double over_bins_sum[N_all_observables] = {0}; sgn_variance = 0;
 	double over_bins_sum_cov[N_all_observables] = {0};
 	for(i=0;i<Nbins;i++) sgn_mean += bin_mean_sgn[i]; sgn_mean /= Nbins;
-	for(i=0;i<Nbins;i++) sgn_variance += (bin_mean_sgn[i] - sgn_mean)*(bin_mean_sgn[i] - sgn_mean); sgn_variance /= (Nbins*(Nbins-1));
+	for(i=0;i<Nbins;i++) sgn_variance += (bin_mean_sgn[i] - sgn_mean)*(bin_mean_sgn[i] - sgn_mean); sgn_variance /= (double(Nbins)*(Nbins-1));
 	for(k=0;k<N_all_observables;k++) if(valid_observable[k]){
 		for(i=0;i<Nbins;i++) Rsum[k] += bin_mean[k][i]; Rsum[k] /= Nbins;
-		for(i=0;i<Nbins;i++) over_bins_sum[k] += (bin_mean[k][i] - Rsum[k])*(bin_mean[k][i] - Rsum[k]); over_bins_sum[k] /= (Nbins*(Nbins-1));
-		for(i=0;i<Nbins;i++) over_bins_sum_cov[k] += (bin_mean[k][i] - Rsum[k])*(bin_mean_sgn[i] - sgn_mean); over_bins_sum_cov[k] /= (Nbins*(Nbins-1));
+		for(i=0;i<Nbins;i++) over_bins_sum[k] += (bin_mean[k][i] - Rsum[k])*(bin_mean[k][i] - Rsum[k]); over_bins_sum[k] /= (double(Nbins)*(Nbins-1));
+		for(i=0;i<Nbins;i++) over_bins_sum_cov[k] += (bin_mean[k][i] - Rsum[k])*(bin_mean_sgn[i] - sgn_mean); over_bins_sum_cov[k] /= (double(Nbins)*(Nbins-1));
 		mean_O_backup[k] = mean_O[k] = Rsum[k]/sgn_mean*(1 + sgn_variance/sgn_mean/sgn_mean) - over_bins_sum_cov[k]/sgn_mean/sgn_mean;
 		stdev_O[k] = fabs(Rsum[k]/sgn_mean)*sqrt(over_bins_sum[k]/Rsum[k]/Rsum[k] + sgn_variance/sgn_mean/sgn_mean - 2*over_bins_sum_cov[k]/Rsum[k]/sgn_mean);
 	}
@@ -154,11 +154,11 @@ void process_single_run(){
 	for(j=0;j<Nbins;j++){
 		sgn_meanJ = sgn_varianceJ = 0;
 		for(i=0;i<Nbins;i++) if(i!=j) sgn_meanJ += bin_mean_sgn[i]; sgn_meanJ /= (Nbins-1);
-		for(i=0;i<Nbins;i++) if(i!=j) sgn_varianceJ += (bin_mean_sgn[i] - sgn_meanJ)*(bin_mean_sgn[i] - sgn_meanJ); sgn_varianceJ /= ((Nbins-1)*(Nbins-2));
+		for(i=0;i<Nbins;i++) if(i!=j) sgn_varianceJ += (bin_mean_sgn[i] - sgn_meanJ)*(bin_mean_sgn[i] - sgn_meanJ); sgn_varianceJ /= (double(Nbins-1)*(Nbins-2));
 		for(k=0;k<N_all_observables;k++) if(valid_observable[k]){
 			Rsum[k] = over_bins_sum_cov[k] = 0;
 			for(i=0;i<Nbins;i++) if(i!=j) Rsum[k] += bin_mean[k][i]; Rsum[k] /= (Nbins-1);
-			for(i=0;i<Nbins;i++) if(i!=j) over_bins_sum_cov[k] += (bin_mean[k][i] - Rsum[k])*(bin_mean_sgn[i] - sgn_meanJ); over_bins_sum_cov[k] /= ((Nbins-1)*(Nbins-2));
+			for(i=0;i<Nbins;i++) if(i!=j) over_bins_sum_cov[k] += (bin_mean[k][i] - Rsum[k])*(bin_mean_sgn[i] - sgn_meanJ); over_bins_sum_cov[k] /= (double(Nbins-1)*(Nbins-2));
 			mean_O[k] = Rsum[k]/sgn_meanJ*(1 + sgn_varianceJ/sgn_meanJ/sgn_meanJ) - over_bins_sum_cov[k]/sgn_meanJ/sgn_meanJ;
 		}
 		for(o=0;o<N_derived_observables;o++) if(valid_derived_observable(o)){
@@ -348,7 +348,7 @@ int main(int argc, char* argv[]){
 	if(mpi_rank == 0){
 		for(i=0;i<Nbins;i++) gathered_bin_mean_sgn[i] /= mpi_size;
 		for(i=0;i<Nbins;i++) sgn_mean += gathered_bin_mean_sgn[i]; sgn_mean /= Nbins;
-		for(i=0;i<Nbins;i++) sgn_variance += (gathered_bin_mean_sgn[i] - sgn_mean)*(gathered_bin_mean_sgn[i] - sgn_mean); sgn_variance /= (Nbins*(Nbins-1));
+		for(i=0;i<Nbins;i++) sgn_variance += (gathered_bin_mean_sgn[i] - sgn_mean)*(gathered_bin_mean_sgn[i] - sgn_mean); sgn_variance /= (double(Nbins)*(Nbins-1));
 		std::cout << std::setprecision(9);
 		std::cout << "Total mean(sgn(W)) = " << sgn_mean << std::endl;
 		std::cout << "Total std.dev.(sgn(W)) = " << sqrt(sgn_variance) << std::endl;
@@ -359,32 +359,93 @@ int main(int argc, char* argv[]){
 			std::cout << "Total of observable #" << ++o << ": "<< name_of_observable(k) << std::endl;
 			for(i=0;i<Nbins;i++) gathered_bin_mean[k][i] /= mpi_size;
 			for(i=0;i<Nbins;i++) Rsum[k] += gathered_bin_mean[k][i]; Rsum[k] /= Nbins;
-			for(i=0;i<Nbins;i++) over_bins_sum[k] += (gathered_bin_mean[k][i] - Rsum[k])*(gathered_bin_mean[k][i] - Rsum[k]); over_bins_sum[k] /= (Nbins*(Nbins-1));
-			for(i=0;i<Nbins;i++) over_bins_sum_cov[k] += (gathered_bin_mean[k][i] - Rsum[k])*(gathered_bin_mean_sgn[i] - sgn_mean); over_bins_sum_cov[k] /= (Nbins*(Nbins-1));
+			for(i=0;i<Nbins;i++) over_bins_sum[k] += (gathered_bin_mean[k][i] - Rsum[k])*(gathered_bin_mean[k][i] - Rsum[k]); over_bins_sum[k] /= (double(Nbins)*(Nbins-1));
+			for(i=0;i<Nbins;i++) over_bins_sum_cov[k] += (gathered_bin_mean[k][i] - Rsum[k])*(gathered_bin_mean_sgn[i] - sgn_mean); over_bins_sum_cov[k] /= (double(Nbins)*(Nbins-1));
 			mean_O[k] = Rsum[k]/sgn_mean*(1 + sgn_variance/sgn_mean/sgn_mean) - over_bins_sum_cov[k]/sgn_mean/sgn_mean;
 			stdev_O[k] = fabs(Rsum[k]/sgn_mean)*sqrt(over_bins_sum[k]/Rsum[k]/Rsum[k] + sgn_variance/sgn_mean/sgn_mean - 2*over_bins_sum_cov[k]/Rsum[k]/sgn_mean);
 			std::cout << "Total mean(O) = " << mean_O[k] << std::endl;
 			std::cout << "Total std.dev.(O) = " << stdev_O[k] << std::endl;
 		}
 	}
-	for(o=0;o<N_derived_observables;o++) if(valid_derived_observable(o) && mpi_rank == 0){
-		mean_derived_O[o] = compute_derived_observable(o); jackknife_sum[o] = 0;
-	}
-	if(mpi_rank == 0) for(j=0;j<Nbins;j++){
-		sgn_meanJ = sgn_varianceJ = 0;
-		for(i=0;i<Nbins;i++) if(i!=j) sgn_meanJ += gathered_bin_mean_sgn[i]; sgn_meanJ /= (Nbins-1);
-		for(i=0;i<Nbins;i++) if(i!=j) sgn_varianceJ += (gathered_bin_mean_sgn[i] - sgn_meanJ)*(gathered_bin_mean_sgn[i] - sgn_meanJ); sgn_varianceJ /= ((Nbins-1)*(Nbins-2));
-		for(k=0;k<N_all_observables;k++) if(valid_observable[k]){
-			Rsum[k] = over_bins_sum_cov[k] = 0;
-			for(i=0;i<Nbins;i++) if(i!=j) Rsum[k] += gathered_bin_mean[k][i]; Rsum[k] /= (Nbins-1);
-			for(i=0;i<Nbins;i++) if(i!=j) over_bins_sum_cov[k] += (gathered_bin_mean[k][i] - Rsum[k])*(gathered_bin_mean_sgn[i] - sgn_meanJ); over_bins_sum_cov[k] /= ((Nbins-1)*(Nbins-2));
-			mean_O[k] = Rsum[k]/sgn_meanJ*(1 + sgn_varianceJ/sgn_meanJ/sgn_meanJ) - over_bins_sum_cov[k]/sgn_meanJ/sgn_meanJ;
-		}
-		for(o=0;o<N_derived_observables;o++) if(valid_derived_observable(o)){
-			jackknife_O[o] = compute_derived_observable(o);
-			jackknife_sum[o] += (jackknife_O[o] - mean_derived_O[o])*(jackknife_O[o] - mean_derived_O[o]);
-		}
-	}
+	// for(o=0;o<N_derived_observables;o++) if(valid_derived_observable(o) && mpi_rank == 0){
+	// 	mean_derived_O[o] = compute_derived_observable(o); jackknife_sum[o] = 0;
+	// }
+	// if(mpi_rank == 0) for(j=0;j<Nbins;j++){
+	// 	sgn_meanJ = sgn_varianceJ = 0;
+	// 	for(i=0;i<Nbins;i++) if(i!=j) sgn_meanJ += gathered_bin_mean_sgn[i]; sgn_meanJ /= (Nbins-1);
+	// 	for(i=0;i<Nbins;i++) if(i!=j) sgn_varianceJ += (gathered_bin_mean_sgn[i] - sgn_meanJ)*(gathered_bin_mean_sgn[i] - sgn_meanJ); sgn_varianceJ /= (double(Nbins-1)*(Nbins-2));
+	// 	for(k=0;k<N_all_observables;k++) if(valid_observable[k]){
+	// 		Rsum[k] = over_bins_sum_cov[k] = 0;
+	// 		for(i=0;i<Nbins;i++) if(i!=j) Rsum[k] += gathered_bin_mean[k][i]; Rsum[k] /= (Nbins-1);
+	// 		for(i=0;i<Nbins;i++) if(i!=j) over_bins_sum_cov[k] += (gathered_bin_mean[k][i] - Rsum[k])*(gathered_bin_mean_sgn[i] - sgn_meanJ); over_bins_sum_cov[k] /= (double(Nbins-1)*(Nbins-2));
+	// 		mean_O[k] = Rsum[k]/sgn_meanJ*(1 + sgn_varianceJ/sgn_meanJ/sgn_meanJ) - over_bins_sum_cov[k]/sgn_meanJ/sgn_meanJ;
+	// 	}
+	// 	for(o=0;o<N_derived_observables;o++) if(valid_derived_observable(o)){
+	// 		jackknife_O[o] = compute_derived_observable(o);
+	// 		jackknife_sum[o] += (jackknife_O[o] - mean_derived_O[o])*(jackknife_O[o] - mean_derived_O[o]);
+	// 	}
+	// }
+	if(mpi_rank == 0){
+      for(o=0;o<N_derived_observables;o++) if(valid_derived_observable(o)){
+          mean_derived_O[o] = compute_derived_observable(o);
+          jackknife_sum[o] = 0;
+      }
+
+      // --- Pre-compute total sums (O(Nbins) once) ---
+      double total_sgn_sum = 0.0;
+      double total_sgn_sq_sum = 0.0;
+      for(i = 0; i < Nbins; i++){
+          double s = gathered_bin_mean_sgn[i];
+          total_sgn_sum += s;
+          total_sgn_sq_sum += s * s;
+      }
+
+      std::vector<double> total_obs_sum(N_all_observables, 0.0);
+      std::vector<double> total_cov_sum(N_all_observables, 0.0);
+      for(k = 0; k < N_all_observables; k++){
+          if(valid_observable[k]){
+              for(i = 0; i < Nbins; i++){
+                  double y = gathered_bin_mean[k][i];
+                  double s = gathered_bin_mean_sgn[i];
+                  total_obs_sum[k] += y;
+                  total_cov_sum[k] += y * s;
+              }
+          }
+      }
+
+      // --- Fast O(1) Jackknife leave-one-out loop ---
+      const double N_minus_1 = static_cast<double>(Nbins - 1);
+      const double denom_var = N_minus_1 * static_cast<double>(Nbins - 2);
+
+      for(j = 0; j < Nbins; j++){
+          double s_j = gathered_bin_mean_sgn[j];
+
+          sgn_meanJ = (total_sgn_sum - s_j) / N_minus_1;
+          double sgn_sq_sumJ = total_sgn_sq_sum - (s_j * s_j);
+          sgn_varianceJ = (sgn_sq_sumJ - N_minus_1 * sgn_meanJ * sgn_meanJ) / denom_var;
+
+          for(k = 0; k < N_all_observables; k++){
+              if(valid_observable[k]){
+                  double y_j = gathered_bin_mean[k][j];
+
+                  Rsum[k] = (total_obs_sum[k] - y_j) / N_minus_1;
+                  double cov_sumJ = total_cov_sum[k] - (y_j * s_j);
+                  over_bins_sum_cov[k] = (cov_sumJ - N_minus_1 * Rsum[k] * sgn_meanJ) / denom_var;
+
+                  mean_O[k] = Rsum[k] / sgn_meanJ * (1.0 + sgn_varianceJ / (sgn_meanJ * sgn_meanJ)) 
+                              - over_bins_sum_cov[k] / (sgn_meanJ * sgn_meanJ);
+              }
+          }
+
+          for(o = 0; o < N_derived_observables; o++){
+              if(valid_derived_observable(o)){
+                  jackknife_O[o] = compute_derived_observable(o);
+                  jackknife_sum[o] += (jackknife_O[o] - mean_derived_O[o]) * (jackknife_O[o] - mean_derived_O[o]);
+              }
+          }
+      }
+  }
+
 	for(o=0;o<N_derived_observables;o++) if(valid_derived_observable(o) && mpi_rank == 0){
 		stdev_derived_O[o] = sqrt(jackknife_sum[o]*(Nbins-1)/Nbins);
 		std::cout << "Total of derived observable: " << name_of_derived_observable(o) << std::endl;

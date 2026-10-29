@@ -108,11 +108,19 @@ def optimize_schedule_interpolated(
         )
 
     # 6. Linear vector interpolation along the 1D path in (beta, gamma) space
-    start_point = old_schedule[0, :]
-    end_point = old_schedule[-1, :]
+    # start_point = old_schedule[0, :]
+    # end_point = old_schedule[-1, :]
+
+    old_beta = old_schedule[:, 0]
+    old_gamma = old_schedule[:, 1]
+
+    new_beta = np.interp(new_lambda, old_lambda, old_beta)
+    new_gamma = np.interp(new_lambda, old_lambda, old_gamma)
+    
+    new_schedule = np.column_stack((new_beta, new_gamma))
 
     # Project new_lambda coordinates onto the line connecting start and end points
-    new_schedule = start_point + np.outer(new_lambda, (end_point - start_point))
+    # new_schedule = start_point + np.outer(new_lambda, (end_point - start_point))
 
     # Save optimized schedule
     np.savetxt(output_schedule_path, new_schedule, fmt="%.6f", delimiter=" ")

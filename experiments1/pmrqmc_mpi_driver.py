@@ -1,3 +1,4 @@
+import logging
 import shutil
 import subprocess
 from contextlib import chdir
@@ -5,8 +6,9 @@ from pathlib import Path
 
 import numpy as np
 from simple_slurm import Slurm
-from validation import validate_pt
+from validation import validate_pt, validate_single_temp
 
+logger = logging.getLogger(__name__)
 
 def write_parameters_hpp(params, output_file):
     Tsteps = params["Tsteps"]
@@ -17,10 +19,11 @@ def write_parameters_hpp(params, output_file):
     tau = params["tau"]
     Nbins = params["Nbins"]
     kmax = params["kmax"]
-    save_completed_calculation = params["save_completed_calculation"]
-    save_unfinished_calculation = params["save_unfinished_calculation"]
-    resume_calculation = params["resume_calculation"]
-    save_timeseries = params["save_timeseries"]
+    save_completed_calculation = params.get("save_completed_calculation", False)
+    save_unfinished_calculation = params.get("save_unfinished_calculation", False)
+    resume_calculation = params.get("resume_calculation", False)
+    save_timeseries = params.get("save_timeseries", False)
+    test_operator_random_seed = params.get("test_operator_random_seed", None)
 
     lines = [
         "#pragma once",
@@ -58,6 +61,8 @@ def write_parameters_hpp(params, output_file):
         lines.append("#define RESUME_CALCULATION")
     if save_timeseries:
         lines.append("#define SAVE_TIMESERIES")
+    if test_operator_random_seed != None:
+        lines.append(f"#define TEST_OPERATOR_RANDOM_SEED {test_operator_random_seed}")
 
     new_content = "\n".join(lines) + "\n"
 
@@ -118,16 +123,51 @@ def setup_run_dir(run_dir, h_string, h_gamma_string=None):
 
 def execute_run_native(run_dir, params):
     run_dir_path = Path(run_dir)
-    write_parameters_hpp(params, run_dir_path / "parameters.hpp")
-    nproc = params["nproc"]
-    with chdir(run_dir_path):
-        subprocess.run(["make", "PMRQMC_mpi.bin"], check=False)
-        with open("PMRQMC_mpi.out", "w") as out_file:
-            subprocess.run(
-                ["mpirun", "-n", f"{nproc}", "PMRQMC_mpi.bin"],
-                stdout=out_file,
-                check=False,
-            )
+    validate = params["validate"]
+
+    if "nproc" not in params:
+        raise KeyError("Execution failed: 'nproc' is missing from params.")
+
+    try:
+        if not run_dir_path.exists():
+            raise FileNotFoundError(f"Run directory does not exist: {run_dir_path}")
+
+        write_parameters_hpp(params, run_dir_path / "parameters.hpp")
+
+        with chdir(run_dir_path):
+            try:
+                subprocess.run(
+                    ["make", "PMRQMC_mpi.bin"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+            except subprocess.CalledProcessError as e:
+                logger.error(f"Compilation failed! Stderr: {e.stderr.strip()}")
+                raise  # crash immediately
+
+            with (
+                open("PMRQMC_mpi.out", "w") as out_file,
+                open("PMRQMC_mpi.err", "w") as err_file,
+            ):
+                subprocess.run(
+                    ["mpirun", "-n", str(params["nproc"]), "PMRQMC_mpi.bin"],
+                    stdout=out_file,
+                    stderr=err_file,
+                    check=True,
+                )
+            if validate:
+                validation_data, metadata = validate_single_temp(Path("."))
+                for key, val in metadata.items():
+                    validation_data[key] = val
+                validation_data.to_csv("validation_out.csv")
+                
+            if params.get("cleanup", False):
+                subprocess.run(["make", "clean"], check=True)
+
+    except Exception as e:
+        logger.error(f"Job in {run_dir} failed: {type(e).__name__} - {e!s}")
+        raise
 
 
 def execute_pt_run_native(run_dir, params):
@@ -156,6 +196,8 @@ def execute_pt_run_native(run_dir, params):
         if validate:
             validation_data = validate_pt(Path("."))
             validation_data.to_csv("validation_out.csv")
+        if params.get("cleanup", False):
+            subprocess.run(["make", "clean"], check=False)
 
 
 def execute_run_slurm(run_dir, params, slurm_params):

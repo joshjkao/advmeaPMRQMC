@@ -8,29 +8,50 @@
 #ifdef TEST_OPERATOR_RANDOM_ZSUM
 template <size_t NBITS> double calculate_Oi(const std::bitset<NBITS> &l) {
   static std::array<double, NBITS> coeffs = [] {
-    std::mt19937 gen(0);
-    std::uniform_real_distribution<double> dist(-1, 1);
+    int rank;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+
+    // 1. Generate a dynamic seed on rank 0 only
+    unsigned int seed = 0;
+    #ifdef TEST_OPERATOR_RANDOM_SEED
+      seed = TEST_OPERATOR_RANDOM_SEED;
+    #else
+    if (rank == 0) {
+      std::random_device rd;
+      seed = rd(); 
+    }
+    #endif
+
+    // 2. Broadcast the seed to all other MPI ranks
+    // std::mt19937::result_type is an unsigned int, so MPI_UNSIGNED is correct
+    MPI_Bcast(&seed, 1, MPI_UNSIGNED, 0, MPI_COMM_WORLD);
+
+    // 3. Initialize the generator with the universally agreed-upon seed
+    std::mt19937 gen(seed);
+    std::uniform_real_distribution<double> dist(-1.0, 1.0);
+    
     std::array<double, NBITS> ret{};
     for (size_t ii = 0; ii < NBITS; ++ii) {
       ret[ii] = dist(gen);
     }
-    int rank;
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    
     if (rank == 0) {
       std::ofstream ofile("O.txt");
+      // It is highly recommended to log the seed so you can reproduce runs
+      ofile << "# Generated with random seed: " << seed << "\n";
       for (const auto &[i, c] : ret | std::views::enumerate) {
         ofile << c << " " << (i + 1) << " Z" << "\n";
       }
     }
     return ret;
   }();
+  
   double O_val = 0.0;
 
   for (size_t i = 0; i < NBITS; ++i) {
     // Map bit 0 -> spin -1.0, bit 1 -> spin +1.0
     // l.test(i) is safer and faster than l[i] for std::bitset
     double spin = l.test(i) ? 1.0 : -1.0;
-
     O_val += coeffs[i] * spin;
   }
 

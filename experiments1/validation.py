@@ -1,5 +1,7 @@
 import math
+import re
 import sys
+from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -8,116 +10,82 @@ import scipy
 from scipy import sparse
 
 
-def c_tau_beta(h, o, beta, tau):
+def c_tau_beta_vec(tau, evals, o_sq, o_diag, beta):
     """
-    C(\\tau) = \\langle O(\\tau) O \\rangle - \\langle O \\rangle ^2
+    Vectorized C(tau) = <O(tau) O> - <O>^2 using pre-computed spectrum
+    and pre-transformed operator squared matrix.
     """
-    evals, evecs = np.linalg.eigh(h)
-
     z = np.sum(np.exp(-beta * evals))
 
-    corr = (
-        np.sum(
-            [
-                np.exp(-(beta - tau) * evals[i])
-                * np.exp(-tau * evals[j])
-                * np.abs(np.dot(np.conj(evecs[:, i].T), np.dot(o, evecs[:, j]))) ** 2
-                for i in range(len(evals))
-                for j in range(len(evals))
-            ]
-        )
-        / z
-    )
+    # Outer product: exp(-(beta - tau) * E_i) * exp(-tau * E_j)
+    exp_i = np.exp(-(beta - tau) * evals)
+    exp_j = np.exp(-tau * evals)
+    weight_mat = np.outer(exp_i, exp_j)
 
-    avgO = (
-        np.sum(
-            [
-                np.exp(-beta * evals[i])
-                * np.dot(np.conj(evecs[:, i].T), np.dot(o, evecs[:, i]))
-                for i in range(len(evals))
-            ]
-        )
-        / z
-    )
+    corr = np.sum(weight_mat * o_sq) / z
+    avgO = np.sum(np.exp(-beta * evals) * o_diag) / z
 
-    gTau = corr - (avgO) ** 2
-    if gTau.imag < 1e-8:
-        gTau = gTau.real
-
-    return gTau
+    gTau = corr - avgO**2
+    return gTau.real if abs(gTau.imag) < 1e-8 else gTau
 
 
-def Hdiag_kint_beta(h, o, beta, tau):
+def Hdiag_kint_beta_vec(tau, evals, o_sq, beta):
     """
-    C(\\tau) = \\langle O(\\tau) O \\rangle
+    Vectorized correlator C(tau) = <O(tau) O> without subtracting <O>^2.
     """
-    evals, evecs = np.linalg.eigh(h)
-
     z = np.sum(np.exp(-beta * evals))
 
-    corr = (
-        np.sum(
-            [
-                np.exp(-(beta - tau) * evals[i])
-                * np.exp(-tau * evals[j])
-                * np.abs(np.dot(np.conj(evecs[:, i].T), np.dot(o, evecs[:, j]))) ** 2
-                for i in range(len(evals))
-                for j in range(len(evals))
-            ]
-        )
-        / z
-    )
+    exp_i = np.exp(-(beta - tau) * evals)
+    exp_j = np.exp(-tau * evals)
+    weight_mat = np.outer(exp_i, exp_j)
 
-    gTau = corr
-    if gTau.imag < 1e-8:
-        gTau = gTau.real
-
-    return gTau
+    corr = np.sum(weight_mat * o_sq) / z
+    return corr.real if abs(corr.imag) < 1e-8 else corr
 
 
-def m_beta_chi_k(h, o, beta, k):
-    """
-    Integrates tau^k*c_tau_beta over tau from [0, beta/2].
-    """
+def m_beta_chi_k_fast(evals, o_sq, o_diag, beta, k):
     result, error = scipy.integrate.quad(
-        lambda tau: tau**k * c_tau_beta(h, o, beta, tau), 0, beta / 2
+        lambda tau: tau**k * c_tau_beta_vec(tau, evals, o_sq, o_diag, beta),
+        0,
+        beta / 2,
     )
     return result, error
 
 
-def calc_Hdiag_kint(h, o, beta, k):
+def calc_Hdiag_kint_fast(evals, o_sq, beta, k):
     result, error = scipy.integrate.quad(
-        lambda tau: tau**k * Hdiag_kint_beta(h, o, beta, tau), 0, beta / 2
+        lambda tau: tau**k * Hdiag_kint_beta_vec(tau, evals, o_sq, beta),
+        0,
+        beta / 2,
     )
     return result, error
 
 
-def calc_approx_gs_gap_k(h, o, beta, k):
-    """
-    approximate the gap by numerically integrating the correlators
-    and taking their ratio
-    """
-    m_0, _error_0 = m_beta_chi_k(h, o, beta, k)
-    m_1, _error_1 = m_beta_chi_k(h, o, beta, k + 1)
+def calc_approx_gs_gap_k_fast(evals, o_sq, o_diag, beta, k):
+    m_0, _ = m_beta_chi_k_fast(evals, o_sq, o_diag, beta, k)
+    m_1, _ = m_beta_chi_k_fast(evals, o_sq, o_diag, beta, k + 1)
     return m_0, m_1, m_0 / m_1
 
 
-# symbolically calculate the k-th moment M_k^{\\beta/2}
-def moment_estimator(k, o, evals):
+def moment_estimator(k, o_rotated, evals):
+    """
+    Symbolically calculate k-th moment M_k^{\beta/2} using rotated operator.
+    """
     n = len(evals)
     return math.factorial(k) * np.sum(
-        [np.abs(o[0, j]) ** 2 / (evals[j] - evals[0]) ** (k + 1) for j in range(1, n)]
+        [
+            np.abs(o_rotated[0, j]) ** 2 / (evals[j] - evals[0]) ** (k + 1)
+            for j in range(1, n)
+        ]
     )
 
 
-# k-th moment without the factorial in front
-def Q_k(k, o, evals):
-    return moment_estimator(k, o, evals) / math.factorial(k)
+def Q_k(k, o_rotated, evals):
+    return moment_estimator(k, o_rotated, evals) / math.factorial(k)
 
 
-# ratio between the k-th and (k+1)-th moments
-def R_k(k, o, evals):
-    return Q_k(k, o, evals) / Q_k(k + 1, o, evals)
+def R_k(k, o_rotated, evals):
+    return Q_k(k, o_rotated, evals) / Q_k(k + 1, o_rotated, evals)
 
 
 I2 = sparse.csr_matrix([[1, 0], [0, 1]], dtype=complex)
@@ -131,19 +99,12 @@ PAULI_DICT = {"I": I2, "X": X2, "Y": Y2, "Z": Z2}
 def text_to_hamiltonian_matrix(
     input_data: str, num_qubits=None, sparse_output: bool = False
 ):
-    """
-    Parses a Pauli Hamiltonian string or text file into a matrix representation.
-    Assumes 1-based qubit indexing matching Qiskit's right-to-left tensor order:
-    |qN qN-1 ... q1>  --->  P_N (x) P_{N-1} (x) ... (x) P_1
-    """
-    # 1. Read input data from path or string
     try:
         with open(input_data, "r") as f:
             lines = f.readlines()
     except (OSError, ValueError):
         lines = input_data.strip().splitlines()
 
-    # 2. Parse lines into coefficient and qubit-operator pairs
     parsed_terms = []
     max_qubit_idx = 0
 
@@ -164,7 +125,6 @@ def text_to_hamiltonian_matrix(
 
         parsed_terms.append((coeff, ops))
 
-    # Infer or validate total qubit count N
     N = max_qubit_idx if num_qubits is None else num_qubits
     if num_qubits is not None and max_qubit_idx > num_qubits:
         raise ValueError(
@@ -177,7 +137,6 @@ def text_to_hamiltonian_matrix(
     dim = 2**N
     H = sparse.csr_matrix((dim, dim), dtype=complex)
 
-    # 3. Construct tensor products in Qiskit order (qN x qN-1 x ... x q1)
     for coeff, ops in parsed_terms:
         term_mat = PAULI_DICT[ops.get(N, "I")]
         for q in range(N - 1, 0, -1):
@@ -185,7 +144,6 @@ def text_to_hamiltonian_matrix(
 
         H += coeff * term_mat
 
-    # Drop imaginary part if Hamiltonian is purely real
     if np.allclose(H.data.imag, 0):
         H = H.real
 
@@ -204,46 +162,44 @@ def run_numerics(
     h_base = text_to_hamiltonian_matrix(h_file)
     o = text_to_hamiltonian_matrix(o_file)
 
-    # Load H_gamma if provided
     h_gamma = (
         text_to_hamiltonian_matrix(h_gamma_file) if h_gamma_file is not None else None
     )
 
-    # Determine (beta, gamma) pairs
     if gamma_values is None:
         bg_pairs = [(beta, 0.0) for beta in beta_values]
     elif len(gamma_values) == len(beta_values):
-        # 1D PT schedule pairing: replica i has (beta_i, gamma_i)
         bg_pairs = list(zip(beta_values, gamma_values))
     else:
-        # Full grid evaluation: all beta x gamma combinations
         bg_pairs = [(beta, gamma) for gamma in gamma_values for beta in beta_values]
 
-    # Group betas by unique gamma values to optimize sparse.linalg.eigsh calls
     gamma_to_betas = defaultdict(list)
     for beta, gamma in bg_pairs:
         gamma_to_betas[gamma].append(beta)
 
     data_rows = []
 
-    # Loop over each unique gamma value
     for gamma, betas_for_gamma in gamma_to_betas.items():
-        # Construct H_eff(gamma) = H_base + gamma * H_gamma
         if h_gamma is not None and gamma != 0.0:
             h_eff = h_base + gamma * h_gamma
         else:
             h_eff = h_base
 
-        # Diagonalize effective Hamiltonian for the current gamma
-        evals, evecs = sparse.linalg.eigsh(h_eff)
+        # Full exact diagonalization (avoids eigsh truncation issue)
+        evals, evecs = np.linalg.eigh(h_eff)
+
+        # Rotate operator into eigenbasis ONCE per gamma
         o_rotated = evecs.conj().T @ o @ evecs
+        o_sq = np.abs(o_rotated) ** 2
+        o_diag = np.diag(o_rotated).real
 
         for this_k in k_values:
             exact_bound = R_k(this_k, o_rotated, evals)
 
             for beta in betas_for_gamma:
-                # Pass effective Hamiltonian h_eff to numerical integration
-                num_den_estimate = calc_approx_gs_gap_k(h_eff, o, beta, this_k)
+                num_den_estimate = calc_approx_gs_gap_k_fast(
+                    evals, o_sq, o_diag, beta, this_k
+                )
 
                 moment = num_den_estimate[0] / math.factorial(this_k)
                 if this_k % 2 == 0:
@@ -253,12 +209,9 @@ def run_numerics(
                 if this_k % 2 == 1:
                     k_plus_one_moment *= -1
 
-                estimate = num_den_estimate[2]
+                estimate = num_den_estimate[2] * (this_k + 1)
 
-                # Factorial rescaling: (k+1)! / k! = k + 1
-                estimate *= this_k + 1
-
-                Hdiag_kint, _ = calc_Hdiag_kint(h_eff, o, beta, this_k)
+                Hdiag_kint, _ = calc_Hdiag_kint_fast(evals, o_sq, beta, this_k)
                 Hdiag_kint /= math.factorial(this_k)
                 if this_k % 2 == 0:
                     Hdiag_kint *= -1
@@ -308,8 +261,8 @@ def run_numerics(
                                 "exact": k_plus_one_moment,
                             }
                         )
-                        Hdiag_kint_plus_one, _ = calc_Hdiag_kint(
-                            h_eff, o, beta, this_k + 1
+                        Hdiag_kint_plus_one, _ = calc_Hdiag_kint_fast(
+                            evals, o_sq, beta, this_k + 1
                         )
                         Hdiag_kint_plus_one /= math.factorial(this_k + 1)
                         if this_k % 2 == 1:
@@ -327,10 +280,6 @@ def run_numerics(
     return gap_estimates
 
 
-import re
-from collections import defaultdict
-
-
 def parse_simulation_output(file_path_or_text, is_file=True):
     if is_file:
         with open(file_path_or_text, "r") as f:
@@ -340,7 +289,6 @@ def parse_simulation_output(file_path_or_text, is_file=True):
 
     metadata = {}
 
-    # 1. Parse Simulation Parameters & General Statistics
     params_match = re.search(
         r"Parameters:\s*beta\s*=\s*(?P<beta>[\d.]+),\s*Tsteps\s*=\s*(?P<Tsteps>\d+),\s*steps\s*=\s*(?P<steps>\d+)",
         text,
@@ -358,7 +306,6 @@ def parse_simulation_output(file_path_or_text, is_file=True):
     if mc_updates:
         metadata["total_mc_updates"] = int(mc_updates.group(1))
 
-    # 2. Parse q, sgn(W), and Non-k Observables
     q_mean = re.search(r"Total mean\(q\)\s*=\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)", text)
     q_max = re.search(r"Total max\(q\)\s*=\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)", text)
     if q_mean:
@@ -387,7 +334,6 @@ def parse_simulation_output(file_path_or_text, is_file=True):
         metadata["h_diag_mean"] = float(h_diag.group("mean"))
         metadata["h_diag_std"] = float(h_diag.group("std"))
 
-    # 3. Parse Timing Data
     cpu_time = re.search(r"Total elapsed cpu time\s*=\s*([\d.]+)\s*seconds", text)
     wall_time = re.search(r"Wall-clock time\s*=\s*([\d.]+)\s*seconds", text)
     if cpu_time:
@@ -395,7 +341,6 @@ def parse_simulation_output(file_path_or_text, is_file=True):
     if wall_time:
         metadata["wall_time_seconds"] = float(wall_time.group(1))
 
-    # 4. Parse k-indexed Observables Block
     block_pattern = re.compile(
         r"Total of (?:derived )?observable(?: #\d+)?: (?P<obs>\S+)\s*\n"
         r"Total mean\(O\) = (?P<mean>[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\s*\n"
@@ -435,10 +380,43 @@ def parse_simulation_output(file_path_or_text, is_file=True):
         .sort_values("k")
     )
 
-    # Attach metadata dictionary directly to the DataFrame attributes as well
     df.attrs = metadata
-
     return df, metadata
+
+
+def validate_single_temp(path):
+    path = Path(path)
+    hamiltonian = path / "H.txt"
+    target_hamiltonian_gamma = path / "H_gamma.txt"
+    hamiltonian_gamma = (
+        target_hamiltonian_gamma if target_hamiltonian_gamma.exists() else None
+    )
+    test_operator = path / "O.txt"
+
+    sim_data, metadata = parse_simulation_output(path / "PMRQMC_mpi.out")
+
+    sim_data["beta"] = metadata["beta"]
+
+    k_values = np.unique(sim_data["k"])
+
+    numerics = run_numerics(
+        hamiltonian,
+        test_operator,
+        k_values,
+        [metadata["beta"]],
+        False,
+        hamiltonian_gamma,
+        [1.0],
+    )
+
+    print(sim_data)
+    print(numerics)
+
+    full_df = pd.merge(sim_data, numerics, on="k")
+
+    print(full_df)
+
+    return full_df, metadata
 
 
 def validate_pt(path):
@@ -456,6 +434,7 @@ def validate_pt(path):
     gamma_values = np.unique(sim_data["gamma"])
     k_max = len(np.unique(sim_data[sim_data["name"].str.contains("ratio")]["name"]))
     k_values = [i for i in range(k_max)]
+
     theor = run_numerics(
         hamiltonian,
         test_operator,

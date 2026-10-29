@@ -125,6 +125,9 @@ int main(int argc, char* argv[]){
 #ifdef SAVE_COMPLETED_CALCULATION
   save_QMC_data(0);
 #endif
+#ifdef SAVE_TIMESERIES
+  export_timeseries_text();
+#endif
   double Rsum[N_all_observables] = {0};
   double sgn_mean = 0;
   double over_bins_sum[N_all_observables] = {0};

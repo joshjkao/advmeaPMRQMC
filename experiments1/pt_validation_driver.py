@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 from pathlib import Path
 
@@ -6,9 +7,12 @@ import numpy as np
 import pandas as pd
 from autocorr import calc_autocorr
 from dotenv import load_dotenv
-from hamiltonian import generate_1d_tfi, generate_quantum_sk_hamiltonian, toy_3bit
-from pmrqmc_mpi_driver import execute_pt_run_native, execute_run_native, setup_run_dir
-from pt_optimize import optimize_schedule, optimize_schedule_interpolated
+from pmrqmc_mpi_driver import (
+    execute_pt_run_native,
+    execute_run_native,
+    setup_run_dir,
+)
+from pt_optimize import optimize_schedule_interpolated
 from roundtrips import parse_rt_stats
 
 
@@ -23,9 +27,15 @@ def full_validation_run(main_params):
     gamma_max = main_params["gamma_max"]
     n_temperatures = main_params["n_temperatures"]
     n_procs = main_params["n_procs"]
+    k_max = main_params["k_max"]
     n_feedback_loops = main_params["n_feedback_loops"]
+    autocorr_steps = main_params["autocorr_steps"]
+    t_exchanges_per_iteration = main_params["t_exchanges_per_iteration"]
+    exchanges_per_iteration = main_params["exchanges_per_iteration"]
     measure_speedup = main_params["measure_speedup"]
     validate_final_run = main_params["validate_final_run"]
+    test_operator_random_seed = main_params["test_operator_random_seed"]
+    schedule_type = main_params["schedule_type"]
 
     load_dotenv()
     scratch_dir = Path(os.getenv("SCRATCH_DIR", "."))
@@ -41,36 +51,54 @@ def full_validation_run(main_params):
             with open(run_dir / "H_gamma.txt", "w") as f:
                 f.write(h_gamma_str)
 
+    instance_details = main_params
+    with open(run_dir / "instance_details.json", "w") as f:
+        json.dump(instance_details, f)
+
     autocorr_params = {
-        "Tsteps": 20000,
-        "steps": 20000,
+        "Tsteps": autocorr_steps,
+        "steps": autocorr_steps,
         "stepsPerMeasurement": 1,
         "beta": beta_min,
         "gamma": gamma_min,
         "tau": beta_min / 2,
-        "kmax": 5,
-        "Nbins": 20000,
+        "kmax": k_max,
+        "Nbins": autocorr_steps,
         "validate": False,
         "save_completed_calculation": False,
         "save_unfinished_calculation": False,
         "resume_calculation": False,
         "save_timeseries": True,
         "nproc": 1,
+        "test_operator_random_seed": test_operator_random_seed,
     }
 
     print("executing short run for autocorrelation statistics")
     execute_run_native(run_dir, autocorr_params)
 
-    tau, bin_length = calc_autocorr(run_dir / "timeseries_rank0.txt")
+    tau, _bin_length, ok = calc_autocorr(run_dir / "timeseries_rank0.txt")
     print(f"tau was {tau}")
+    if not ok:
+        print("warning, timeseries is too short")
 
     print("starting PT temperature optimization")
-    init_beta_schedule = np.geomspace(beta_max, beta_min, n_temperatures)
-    init_gamma_schedule = np.geomspace(gamma_max, gamma_min, n_temperatures)
-    tau_corr = int(np.ceil(tau))
 
-    therm_exchanges = 10000
-    tuning_exchanges = 10000
+    init_beta_schedule = np.linspace(beta_max, beta_min, n_temperatures)
+    init_gamma_schedule = np.linspace(gamma_max, gamma_min, n_temperatures)
+
+    if schedule_type == "linear_geometric":
+        init_gamma_schedule = np.geomspace(gamma_max, gamma_min, n_temperatures)
+    elif schedule_type == "geometric_linear":
+        init_beta_schedule = np.geomspace(beta_max, beta_min, n_temperatures)
+
+    tau_corr = int(np.ceil(tau))
+    instance_details["tau_corr"] = tau_corr
+
+    init_full_schedule = np.array([init_beta_schedule, init_gamma_schedule])
+    schedules = [init_full_schedule]
+
+    therm_exchanges = int(t_exchanges_per_iteration )
+    tuning_exchanges = int(exchanges_per_iteration )
 
     params = {
         "Tsteps": therm_exchanges * tau_corr,
@@ -81,7 +109,7 @@ def full_validation_run(main_params):
         "gamma_range": init_gamma_schedule,
         "gamma": gamma_min,
         "tau": beta_min / 2,
-        "kmax": 5,
+        "kmax": k_max,
         "Nbins": 100,
         "validate": False,
         "save_completed_calculation": False,
@@ -90,12 +118,15 @@ def full_validation_run(main_params):
         "updates_per_exchange": tau_corr,
         "save_timeseries": False,
         "nproc": n_procs,
+        "test_operator_random_seed": test_operator_random_seed,
     }
 
     avg_rt_length = None
 
     for iteration in range(n_feedback_loops):
-        print(f"\n--- Running PT Optimization Iteration {iteration + 1} of {n_feedback_loops} ---")
+        print(
+            f"\n--- Running PT Optimization Iteration {iteration + 1} of {n_feedback_loops} ---"
+        )
         execute_pt_run_native(run_dir, params)
 
         total_visits, round_trips = parse_rt_stats(run_dir / "pmrqmc_pt_flow.csv")
@@ -111,7 +142,7 @@ def full_validation_run(main_params):
             )
             avg_rt_length = tuning_exchanges  # Fallback estimate
 
-        _, old_schedule, new_schedule = optimize_schedule(
+        _, old_schedule, new_schedule = optimize_schedule_interpolated(
             run_dir / "pmrqmc_pt_flow.csv",
             run_dir / "schedule.txt",
             run_dir / "schedule.txt",
@@ -126,6 +157,8 @@ def full_validation_run(main_params):
         params["beta_range"] = new_betas
         params["gamma_range"] = new_gammas
 
+        schedules.append(new_schedule)
+
         if np.allclose(old_schedule, new_schedule, rtol=0.01):
             print("Temperature schedule converged. Stopping optimization early.")
             break
@@ -135,25 +168,29 @@ def full_validation_run(main_params):
     target_bin_length = int_rt_length * tau_corr * 100
     print(f"Final target bin length: {target_bin_length}")
 
+    instance_details["final_rt_length"] = int_rt_length
+    instance_details["target_bin_length"] = target_bin_length
+
     if measure_speedup:
         autocorr_params = {
-            "Tsteps": 20000,
-            "steps": 20000,
+            "Tsteps": autocorr_steps,
+            "steps": autocorr_steps,
             "stepsPerMeasurement": 1,
             "beta": beta_max,
             "gamma": gamma_max,
-            "tau": beta_min / 2,
-            "kmax": 5,
-            "Nbins": 20000,
+            "tau": beta_max / 2,
+            "kmax": k_max,
+            "Nbins": autocorr_steps,
             "validate": False,
             "save_completed_calculation": False,
             "save_unfinished_calculation": False,
             "resume_calculation": False,
             "save_timeseries": True,
             "nproc": 1,
+            "test_operator_random_seed": test_operator_random_seed,
         }
         execute_run_native(run_dir, autocorr_params)
-        tau_max_beta, _ = calc_autocorr(run_dir / "timeseries_rank0.txt")
+        tau_max_beta, _, _ok = calc_autocorr(run_dir / "timeseries_rank0.txt")
         print(f"tau at max beta was {tau_max_beta}")
         print(
             f"the respective timescales are {tau_max_beta} (single temperature) and {int_rt_length * tau_corr} (PT)"
@@ -161,6 +198,8 @@ def full_validation_run(main_params):
         print(
             f"the relative speedup is {tau_max_beta / (int_rt_length * tau_corr) / n_temperatures}"
         )
+
+        instance_details["pt_speedup"] = tau_max_beta / (int_rt_length * tau_corr) / n_temperatures
 
     timing_data = pd.read_csv(run_dir / "pmrqmc_pt_rank_timing.csv")
     wall_time = np.max(timing_data["elapsed_seconds"])
@@ -183,7 +222,7 @@ def full_validation_run(main_params):
         "gamma": gamma_min,
         "gamma_range": params["gamma_range"],
         "tau": beta_min / 2,
-        "kmax": 5,
+        "kmax": k_max,
         "Nbins": final_target_bins,
         "save_completed_calculation": False,
         "save_unfinished_calculation": False,
@@ -191,9 +230,13 @@ def full_validation_run(main_params):
         "save_timeseries": False,
         "nproc": n_procs,
         "validate": validate_final_run,
+        "test_operator_random_seed": test_operator_random_seed,
     }
 
     print(f"starting final run. expected time: {expected_time} seconds")
+
+    with open(run_dir / "instance_details.json", "w") as f:
+        json.dump(instance_details, f)
 
     execute_pt_run_native(run_dir, final_params)
 
@@ -236,6 +279,7 @@ def parse_args():
     parser.add_argument(
         "--gamma-max", type=float, default=1.5, help="Maximum transverse field (gamma)"
     )
+    parser.add_argument("--k-max", type=int, required=True, help="maximum k value")
 
     # Execution Parameters (Integers)
     parser.add_argument(
@@ -248,7 +292,16 @@ def parse_args():
         "--n-procs", type=int, default=40, help="Number of parallel processes"
     )
     parser.add_argument(
-        "--n-feedback-loops", type=int, default=10, help="Number feedback optimization iterations"
+        "--n-feedback-loops",
+        type=int,
+        default=10,
+        help="Number feedback optimization iterations",
+    )
+    parser.add_argument(
+        "--test-operator-random-seed",
+        type=int,
+        default=42,
+        help="seed to generate the test operator",
     )
 
     # Boolean Flags
@@ -263,6 +316,21 @@ def parse_args():
         help="Run exact diagonalization validation on final outputs",
     )
 
+    parser.add_argument(
+        "--autocorr-steps",
+        type=int,
+        help="timeseries length for autocorrelation calculations",
+    )
+    parser.add_argument(
+        "--t-exchanges-per-iteration",
+        type=int,
+        help="number of thermalization PT exchanges for each optimization iteration",
+    )
+    parser.add_argument(
+        "--exchanges-per-iteration",
+        type=int,
+        help="number of PT exchanges for each optimization iteration",
+    )
     return vars(parser.parse_args())
 
 
